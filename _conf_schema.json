@@ -1,0 +1,8 @@
+{
+  "report_prefix": {
+    "description": "告状消息的前缀文本",
+    "type": "string",
+    "hint": "发送给管理员的消息前会自动加上此前缀，用于标识。例如：「【AI告状】」",
+    "default": "【🤖 机器人告状】"
+  }
+}

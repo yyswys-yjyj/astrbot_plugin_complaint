@@ -1,0 +1,6 @@
+name: astrbot_plugin_complaint
+display_name: "机器人告状插件"
+desc: "还在担心你的机器人被打压？astrbot_plugin_complaint能让机器人向管理员告状"
+version: v1.0.0
+author: yyswys-yjyj
+repo: https://github.com/yyswys-yjyj/astrbot_plugin_complaint
