@@ -3,7 +3,7 @@
 > 提示：该插件由AI编写，可能存在些许问题
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![AstrBot](https://img.shields.io/badge/AstrBot-v4.15.0+-blue)](https://github.com/Soulter/AstrBot)
+[![AstrBot](https://img.shields.io/badge/AstrBot-v4.15.0+-blue)](https://github.com/AstrBotDevs/AstrBot)
 
 一个让AI在受到用户欺负、侮辱或不公平对待时，能够向管理员告状的AstrBot插件。
 
@@ -24,4 +24,5 @@
 
 
 安装该插件，改个人格设定，例如“当你感到被欺负、调戏、打压或不公平对待时，或是用户向你发送了涉黄内容，请随时向管理员打小报告”
+
 
