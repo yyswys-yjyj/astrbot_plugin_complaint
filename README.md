@@ -1,12 +1,15 @@
 # 🤖 机器人告状插件 (Complaint Plugin)
 
-![](https://visitor.serveryyswys.top/cnt/astrbot_plugin_complaint) 访问量统计图
+<p align="center">
+  <img src="https://visitor.serveryyswys.top/cnt/astrbot_plugin_complaint"></img><br>
+  <strong>一个当AI在受到用户欺负、侮辱或不公平对待时，能够向管理员告状的AstrBot插件。</strong><br><br>
+  <a href="https://opensource.org/licenses/MIT" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT license"></a>
+</p>
+
+
+
 
 > 提示：该插件由AI编写，可能存在些许问题
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-一个当AI在受到用户欺负、侮辱或不公平对待时，能够向管理员告状的AstrBot插件。
 
 ## ✨ 功能特点
 
