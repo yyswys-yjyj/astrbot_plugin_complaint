@@ -3,25 +3,25 @@ from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import MessageChain
 import asyncio
-from typing import List, Union
+from typing import List, Union, Optional
 
 class ComplaintPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
         
-        # 从AstrBot系统配置中获取管理员列表
+        # 从 AstrBot 全局配置获取管理员列表（常规管理员）
         astrbot_config = self.context.get_config()
         raw_admin_ids = astrbot_config.get('admins_id', [])
         self.admin_ids = self._validate_admin_ids(raw_admin_ids)
         
-        # 加载插件配置
-        self.report_prefix = self.config.get('report_prefix', '【🤖 机器人告状】')
-        self.message_type_mode = self.config.get('message_type_mode', 'auto')
-        self.custom_message_type = self.config.get('custom_message_type', 'FriendMessage')
+        # 插件配置
+        self.report_prefix = self.config.get('report_prefix', '【机器人告状】')
+        self.fallback_admin_umo = self.config.get('fallback_admin_umo', '').strip()
+        self.fallback_send_mode = self.config.get('fallback_send_mode', 'only_error')
         
-        if not self.admin_ids:
-            logger.warning("告状插件：没有有效管理员ID，告状功能将无法发送消息。")
+        if not self.admin_ids and not self.fallback_admin_umo:
+            logger.warning("告状插件：未配置任何管理员（常规或备用），告状功能将无法发送消息。")
 
     def _validate_admin_ids(self, raw_ids: List[Union[str, int]]) -> List[str]:
         """验证并格式化管理员ID"""
@@ -31,98 +31,85 @@ class ComplaintPlugin(Star):
                 str_id = str(admin_id).strip()
                 if str_id:
                     valid_ids.append(str_id)
-                else:
-                    logger.warning(f"管理员ID为空字符串，已忽略")
-            except Exception as e:
-                logger.warning(f"管理员ID {admin_id} 格式无效，已忽略: {e}")
+            except Exception:
+                continue
         return valid_ids
 
-    def _get_message_type(self, event: AstrMessageEvent) -> str:
+    def _build_admin_umo(self, admin_id: str, original_umo: str) -> Optional[str]:
         """
-        根据配置获取消息类型
+        根据原始 UMO 构造发送给管理员的 UMO。
+        假设格式为：platform:message_type:sender_id
         """
-        if self.message_type_mode == "custom":
-            logger.debug(f"使用自定义消息类型: {self.custom_message_type}")
-            return self.custom_message_type
-        
-        # auto模式：从事件中提取消息类型
-        current_origin = event.unified_msg_origin
-        parts = current_origin.split(':')
-        
-        if len(parts) >= 2:
-            source_msg_type = parts[1]
-            
-            # 智能判断：如果来源是群聊，自动转换为对应的私聊类型
-            if "Group" in source_msg_type or "group" in source_msg_type:
-                # 群聊转私聊的映射表
-                type_mapping = {
-                    "GroupMessage": "FriendMessage",
-                    "group_message": "private_message",
-                    "GroupMsg": "FriendMsg",
-                    "group_msg": "private_msg"
-                }
-                
-                # 查找映射，如果找不到则尝试替换
-                for group_type, friend_type in type_mapping.items():
-                    if source_msg_type == group_type:
-                        logger.info(f"auto模式转换消息类型: {source_msg_type} -> {friend_type}")
-                        return friend_type
-                
-                # 通用替换规则
-                converted = source_msg_type.replace("Group", "Friend").replace("group", "private")
-                logger.info(f"auto模式转换消息类型: {source_msg_type} -> {converted}")
-                return converted
-            
-            return source_msg_type
-        
-        return "FriendMessage"  # 默认
+        parts = original_umo.split(':')
+        if len(parts) >= 3:
+            return f"{parts[0]}:{parts[1]}:{admin_id}"
+        else:
+            logger.error(f"原始 UMO 格式异常: {original_umo}")
+            return None
 
-    async def _send_to_admins(self, event: AstrMessageEvent, text: str) -> bool:
-        """向所有管理员发送私聊消息"""
-        if not self.admin_ids:
-            logger.error("没有有效管理员ID可发送")
+    async def _send_message(self, target_umo: str, message_chain: MessageChain) -> bool:
+        """私下发送消息到指定 UMO，不向原会话发送任何内容"""
+        try:
+            await self.context.send_message(target_umo, message_chain)
+            logger.info(f"消息已发送 -> {target_umo}")
+            return True
+        except Exception as e:
+            logger.error(f"发送失败 -> {target_umo}, 错误: {type(e).__name__}: {e}")
             return False
 
-        # 构建消息内容
-        source_info = f"来自用户 {event.get_sender_name()}({event.get_sender_id()})"
-        if event.get_group_id():
-            source_info += f" 在群 {event.get_group_id()} 中"
+    async def _send_to_admins(self, event: AstrMessageEvent, complaint_text: str) -> tuple[List[str], List[str]]:
+        """
+        向所有常规管理员私下发送告状消息。
+        返回 (成功列表, 失败列表)
+        """
+        if not self.admin_ids:
+            return [], []
         
-        if event.message_str and event.message_str != text:
-            source_info += f"\n\n📝 用户说: {event.message_str}"
+        original_umo = event.unified_msg_origin
+        message_content = f"{self.report_prefix}\n{complaint_text}"
+        message_chain = MessageChain().message(message_content)
         
-        final_message = f"{self.report_prefix}\n{text}\n\n---\n{source_info}"
-        message_chain = MessageChain().message(final_message)
+        success_list = []
+        fail_list = []
+        
+        async def send_one(admin_id: str):
+            admin_umo = self._build_admin_umo(admin_id, original_umo)
+            if admin_umo is None:
+                fail_list.append(admin_id)
+                return
+            if await self._send_message(admin_umo, message_chain):
+                success_list.append(admin_id)
+            else:
+                fail_list.append(admin_id)
+        
+        await asyncio.gather(*[send_one(aid) for aid in self.admin_ids])
+        return success_list, fail_list
 
-        # 获取消息类型
-        message_type = self._get_message_type(event)
+    async def _send_to_fallback_admin(self, error_msg: str, complaint_text: str) -> bool:
+        """
+        向备用管理员私下发送消息（根据配置的模式）。
+        返回是否至少发送了一条消息。
+        """
+        if not self.fallback_admin_umo:
+            return False
         
-        # 从 unified_msg_origin 中提取机器人名称（第一部分）
-        current_origin = event.unified_msg_origin
-        parts = current_origin.split(':')
-        bot_name = parts[0] if len(parts) >= 1 else "default"
-
-        # 并发发送任务
-        async def send_to_single_admin(admin_id: str):
-            try:
-                # 使用机器人名称和消息类型构造目标地址
-                target_origin = f"{bot_name}:{message_type}:{admin_id}"
-                
-                logger.info(f"尝试向管理员 {admin_id} 发送消息，目标: {target_origin}")
-                await self.context.send_message(target_origin, message_chain)
-                logger.info(f"✅ 已向管理员 {admin_id} 发送告状消息")
-                return True
-                
-            except Exception as e:
-                logger.error(f"向管理员 {admin_id} 发送失败: {type(e).__name__}: {e}")
-                return False
-
-        results = await asyncio.gather(
-            *[send_to_single_admin(admin_id) for admin_id in self.admin_ids],
-            return_exceptions=False
-        )
+        mode = self.fallback_send_mode
         
-        return any(results)
+        if mode == 'only_error':
+            chain = MessageChain().message(f"【告状失败】\n{error_msg}")
+            return await self._send_message(self.fallback_admin_umo, chain)
+        elif mode == 'only_complaint':
+            chain = MessageChain().message(f"{self.report_prefix}\n{complaint_text}")
+            return await self._send_message(self.fallback_admin_umo, chain)
+        elif mode == 'both':
+            chain_err = MessageChain().message(f"【告状失败】\n{error_msg}")
+            chain_complaint = MessageChain().message(f"{self.report_prefix}\n{complaint_text}")
+            success_err = await self._send_message(self.fallback_admin_umo, chain_err)
+            success_complaint = await self._send_message(self.fallback_admin_umo, chain_complaint)
+            return success_err or success_complaint
+        else:
+            logger.warning(f"未知的备用发送模式: {mode}")
+            return False
 
     @filter.llm_tool(name="report_to_admin")
     async def report_to_admin(self, event: AstrMessageEvent, text: str):
@@ -132,11 +119,60 @@ class ComplaintPlugin(Star):
         Args:
             text(string): 详细的告状内容，描述用户说了什么、做了什么让你感到被欺负，以及你的感受等。
         '''
+        # 代码层禁止群聊使用
+        if event.get_group_id():
+            return "[错误] 群聊不支持告状"
+        
         logger.info(f"AI触发告状: {text[:50]}...")
         
-        if not self.admin_ids:
-            logger.error("无有效管理员，告状失败")
-            return "告状失败：无法联系管理员"
+        # 私下发送给常规管理员
+        success_list, fail_list = await self._send_to_admins(event, text)
         
-        success = await self._send_to_admins(event, text)
-        return "已记录" if success else "告状失败"
+        error_msg = ""
+        if fail_list:
+            error_msg = f"向以下管理员发送失败: {', '.join(fail_list)}"
+            logger.error(error_msg)
+        
+        # 判断是否需要启用备用管理员
+        if not success_list and (fail_list or not self.admin_ids):
+            logger.info("常规管理员全部失败，尝试备用管理员")
+            fallback_sent = await self._send_to_fallback_admin(error_msg, text)
+            if fallback_sent:
+                return "[警告] 常规告状失败，已通知备用管理员"
+            else:
+                return "[错误] 告状失败，无可用管理员"
+        elif success_list:
+            # 静默成功，只返回内部状态
+            return "[成功] 告状已处理"
+        else:
+            return "[错误] 告状失败，内部错误"
+
+    @filter.command("complaint_test")
+    async def complaint_test(self, event: AstrMessageEvent):
+        """测试告状功能是否正常，消息是否可达"""
+        if event.get_group_id():
+            yield event.plain_result("[禁止] 测试指令仅支持私聊")
+            return
+        
+        if not self.admin_ids and not self.fallback_admin_umo:
+            yield event.plain_result("[信息] 未配置任何管理员")
+            return
+        
+        test_text = "这是一条来自 complaint_test 指令的测试消息。"
+        success_list, fail_list = await self._send_to_admins(event, test_text)
+        
+        result_parts = []
+        if success_list:
+            result_parts.append(f"[成功] 发送给: {', '.join(success_list)}")
+        if fail_list:
+            result_parts.append(f"[失败] 发送失败: {', '.join(fail_list)}")
+        
+        if self.fallback_admin_umo:
+            test_error = "测试错误信息"
+            sent = await self._send_to_fallback_admin(test_error, test_text)
+            result_parts.append(f"[备用] 备用管理员: {'[成功]' if sent else '[失败]'}")
+        
+        if not result_parts:
+            result_parts.append("[信息] 未执行任何发送")
+        
+        yield event.plain_result("\n".join(result_parts))
