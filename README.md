@@ -1,5 +1,7 @@
 # 🤖 机器人告状插件 (Complaint Plugin)
 
+![](https://visitor.serveryyswys.top/cnt/yyswys-yjyj/astrbot_plugin_complaint)
+
 > 提示：该插件由AI编写，可能存在些许问题
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
