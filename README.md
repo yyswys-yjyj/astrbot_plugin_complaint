@@ -1,6 +1,6 @@
 # 🤖 机器人告状插件 (Complaint Plugin)
 
-![](https://visitor.serveryyswys.top/cnt/astrbot_plugin_complaint)
+![](https://visitor.serveryyswys.top/cnt/astrbot_plugin_complaint) 访问量统计图
 
 > 提示：该插件由AI编写，可能存在些许问题
 
