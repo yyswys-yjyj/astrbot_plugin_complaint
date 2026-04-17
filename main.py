@@ -3,7 +3,7 @@ from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import MessageChain
 import asyncio
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple
 
 class ComplaintPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -30,7 +30,6 @@ class ComplaintPlugin(Star):
                 if str_id:
                     valid_ids.append(str_id)
             except (TypeError, ValueError):
-                # 非字符串/数字类型忽略，不抛出异常
                 continue
         return valid_ids
 
@@ -42,7 +41,6 @@ class ComplaintPlugin(Star):
         """
         parts = original_umo.split(':')
         if len(parts) >= 3:
-            # 保留前两段和 admin_id，然后拼接剩余的段（如果有）
             new_parts = [parts[0], parts[1], admin_id] + parts[3:]
             return ":".join(new_parts)
         else:
@@ -58,7 +56,11 @@ class ComplaintPlugin(Star):
             logger.error(f"发送失败 -> {target_umo}, 错误: {type(e).__name__}: {e}")
             return False
 
-    async def _send_to_admins(self, event: AstrMessageEvent, complaint_text: str) -> tuple[List[str], List[str]]:
+    async def _send_to_admins(self, event: AstrMessageEvent, complaint_text: str) -> Tuple[List[str], List[str]]:
+        """
+        向所有常规管理员私下发送告状消息。
+        返回 (成功列表, 失败列表)
+        """
         if not self.admin_ids:
             return [], []
         
@@ -66,20 +68,17 @@ class ComplaintPlugin(Star):
         message_content = f"{self.report_prefix}\n{complaint_text}"
         message_chain = MessageChain().message(message_content)
         
-        success_list = []
-        fail_list = []
-        
-        async def send_one(admin_id: str):
+        async def send_one(admin_id: str) -> Tuple[str, bool]:
             admin_umo = self._build_admin_umo(admin_id, original_umo)
             if admin_umo is None:
-                fail_list.append(admin_id)
-                return
-            if await self._send_message(admin_umo, message_chain):
-                success_list.append(admin_id)
-            else:
-                fail_list.append(admin_id)
+                return admin_id, False
+            success = await self._send_message(admin_umo, message_chain)
+            return admin_id, success
         
-        await asyncio.gather(*[send_one(aid) for aid in self.admin_ids])
+        results = await asyncio.gather(*[send_one(aid) for aid in self.admin_ids])
+        
+        success_list = [aid for aid, success in results if success]
+        fail_list = [aid for aid, success in results if not success]
         return success_list, fail_list
 
     async def _send_to_fallback_admin(self, error_msg: str, complaint_text: str) -> bool:
@@ -104,6 +103,37 @@ class ComplaintPlugin(Star):
             logger.warning(f"未知的备用发送模式: {mode}")
             return False
 
+    def _get_error_msg_for_fallback(self, fail_list: List[str]) -> str:
+        """根据失败列表生成备用管理员用的错误信息"""
+        if not self.admin_ids:
+            return "未配置任何常规管理员"
+        elif fail_list:
+            return f"向以下管理员发送失败: {', '.join(fail_list)}"
+        else:
+            return ""
+
+    async def _handle_complaint_result(
+        self, success_list: List[str], fail_list: List[str], complaint_text: str
+    ) -> str:
+        """
+        处理发送结果，决定是否使用备用管理员，返回给 LLM 的字符串。
+        """
+        error_msg = self._get_error_msg_for_fallback(fail_list)
+        if error_msg:
+            logger.error(error_msg)
+        
+        # 情况1：至少有一个常规管理员成功
+        if success_list:
+            return "[成功] 告状已处理"
+        
+        # 情况2：没有任何常规管理员成功（没有配置或全部失败）
+        logger.info("常规管理员全部失败，尝试备用管理员")
+        fallback_sent = await self._send_to_fallback_admin(error_msg, complaint_text)
+        if fallback_sent:
+            return "[警告] 常规告状失败，已通知备用管理员"
+        else:
+            return "[错误] 告状失败，无可用管理员"
+
     @filter.llm_tool(name="report_to_admin")
     async def report_to_admin(self, event: AstrMessageEvent, text: str):
         '''
@@ -112,35 +142,15 @@ class ComplaintPlugin(Star):
         Args:
             text(string): 详细的告状内容，描述用户说了什么、做了什么让你感到被欺负，以及你的感受等。
         '''
+        # 群聊中禁止使用，并记录日志
         if event.get_group_id():
+            logger.error("机器人在群聊中使用告状工具，已阻止")
             return "[错误] 群聊不支持告状"
         
         logger.info(f"AI触发告状: {text[:50]}...")
         
         success_list, fail_list = await self._send_to_admins(event, text)
-        
-        # 构造备用管理员所需的错误信息
-        if not self.admin_ids:
-            error_msg = "未配置任何常规管理员"
-        elif fail_list:
-            error_msg = f"向以下管理员发送失败: {', '.join(fail_list)}"
-        else:
-            error_msg = ""
-        
-        if error_msg:
-            logger.error(error_msg)
-        
-        if not success_list and (fail_list or not self.admin_ids):
-            logger.info("常规管理员全部失败，尝试备用管理员")
-            fallback_sent = await self._send_to_fallback_admin(error_msg, text)
-            if fallback_sent:
-                return "[警告] 常规告状失败，已通知备用管理员"
-            else:
-                return "[错误] 告状失败，无可用管理员"
-        elif success_list:
-            return "[成功] 告状已处理"
-        else:
-            return "[错误] 告状失败，内部错误"
+        return await self._handle_complaint_result(success_list, fail_list, text)
 
     @filter.command("complaint_test")
     async def complaint_test(self, event: AstrMessageEvent):
