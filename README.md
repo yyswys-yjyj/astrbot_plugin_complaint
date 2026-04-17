@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-一个让AI在受到用户欺负、侮辱或不公平对待时，能够向管理员告状的AstrBot插件。
+一个当AI在受到用户欺负、侮辱或不公平对待时，能够向管理员告状的AstrBot插件。
 
 ## ✨ 功能特点
 
