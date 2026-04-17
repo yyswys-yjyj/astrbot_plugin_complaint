@@ -10,12 +10,10 @@ class ComplaintPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         
-        # 从 AstrBot 全局配置获取管理员列表（常规管理员）
         astrbot_config = self.context.get_config()
         raw_admin_ids = astrbot_config.get('admins_id', [])
         self.admin_ids = self._validate_admin_ids(raw_admin_ids)
         
-        # 插件配置
         self.report_prefix = self.config.get('report_prefix', '【机器人告状】')
         self.fallback_admin_umo = self.config.get('fallback_admin_umo', '').strip()
         self.fallback_send_mode = self.config.get('fallback_send_mode', 'only_error')
@@ -31,24 +29,27 @@ class ComplaintPlugin(Star):
                 str_id = str(admin_id).strip()
                 if str_id:
                     valid_ids.append(str_id)
-            except Exception:
+            except (TypeError, ValueError):
+                # 非字符串/数字类型忽略，不抛出异常
                 continue
         return valid_ids
 
     def _build_admin_umo(self, admin_id: str, original_umo: str) -> Optional[str]:
         """
         根据原始 UMO 构造发送给管理员的 UMO。
-        假设格式为：platform:message_type:sender_id
+        保留原始 UMO 的所有段，仅替换第三段（session_id）为 admin_id。
+        假设格式为：platform:message_type:session_id[:extra...]
         """
         parts = original_umo.split(':')
         if len(parts) >= 3:
-            return f"{parts[0]}:{parts[1]}:{admin_id}"
+            # 保留前两段和 admin_id，然后拼接剩余的段（如果有）
+            new_parts = [parts[0], parts[1], admin_id] + parts[3:]
+            return ":".join(new_parts)
         else:
-            logger.error(f"原始 UMO 格式异常: {original_umo}")
+            logger.error(f"原始 UMO 格式异常，无法构造管理员 UMO: {original_umo}")
             return None
 
     async def _send_message(self, target_umo: str, message_chain: MessageChain) -> bool:
-        """私下发送消息到指定 UMO，不向原会话发送任何内容"""
         try:
             await self.context.send_message(target_umo, message_chain)
             logger.info(f"消息已发送 -> {target_umo}")
@@ -58,10 +59,6 @@ class ComplaintPlugin(Star):
             return False
 
     async def _send_to_admins(self, event: AstrMessageEvent, complaint_text: str) -> tuple[List[str], List[str]]:
-        """
-        向所有常规管理员私下发送告状消息。
-        返回 (成功列表, 失败列表)
-        """
         if not self.admin_ids:
             return [], []
         
@@ -86,10 +83,6 @@ class ComplaintPlugin(Star):
         return success_list, fail_list
 
     async def _send_to_fallback_admin(self, error_msg: str, complaint_text: str) -> bool:
-        """
-        向备用管理员私下发送消息（根据配置的模式）。
-        返回是否至少发送了一条消息。
-        """
         if not self.fallback_admin_umo:
             return False
         
@@ -119,21 +112,24 @@ class ComplaintPlugin(Star):
         Args:
             text(string): 详细的告状内容，描述用户说了什么、做了什么让你感到被欺负，以及你的感受等。
         '''
-        # 代码层禁止群聊使用
         if event.get_group_id():
             return "[错误] 群聊不支持告状"
         
         logger.info(f"AI触发告状: {text[:50]}...")
         
-        # 私下发送给常规管理员
         success_list, fail_list = await self._send_to_admins(event, text)
         
-        error_msg = ""
-        if fail_list:
+        # 构造备用管理员所需的错误信息
+        if not self.admin_ids:
+            error_msg = "未配置任何常规管理员"
+        elif fail_list:
             error_msg = f"向以下管理员发送失败: {', '.join(fail_list)}"
+        else:
+            error_msg = ""
+        
+        if error_msg:
             logger.error(error_msg)
         
-        # 判断是否需要启用备用管理员
         if not success_list and (fail_list or not self.admin_ids):
             logger.info("常规管理员全部失败，尝试备用管理员")
             fallback_sent = await self._send_to_fallback_admin(error_msg, text)
@@ -142,14 +138,12 @@ class ComplaintPlugin(Star):
             else:
                 return "[错误] 告状失败，无可用管理员"
         elif success_list:
-            # 静默成功，只返回内部状态
             return "[成功] 告状已处理"
         else:
             return "[错误] 告状失败，内部错误"
 
     @filter.command("complaint_test")
     async def complaint_test(self, event: AstrMessageEvent):
-        """测试告状功能是否正常，消息是否可达"""
         if event.get_group_id():
             yield event.plain_result("[禁止] 测试指令仅支持私聊")
             return
