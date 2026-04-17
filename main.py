@@ -55,6 +55,13 @@ class ComplaintPlugin(Star):
 
     def _validate_admin_ids(self, raw_ids: list[str | int]) -> list[str]:
         """验证并格式化管理员ID"""
+        # 修复：如果 raw_ids 是字符串或整数，转为单元素列表
+        if isinstance(raw_ids, (str, int)):
+            raw_ids = [raw_ids]
+        # 如果 raw_ids 不是可迭代对象，置为空列表
+        elif not hasattr(raw_ids, '__iter__'):
+            raw_ids = []
+        
         valid_ids = []
         for admin_id in raw_ids:
             try:
