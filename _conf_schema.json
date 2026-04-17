@@ -4,18 +4,17 @@
     "type": "string",
     "default": "【🤖 机器人告状】"
   },
-  "message_type_mode": {
-    "description": "消息类型配置模式",
+  "fallback_admin_umo": {
+    "description": "备用管理员完整UMO",
     "type": "string",
-    "options": ["auto", "custom"],
-    "default": "auto",
-    "hint": "auto: 自动从当前会话推断消息类型（可能不准确）；custom: 手动指定消息类型"
+    "default": "",
+    "hint": "（当所有常规管理员发送失败时使用）格式示例：aiocqhttp:private:123456789"
   },
-  "custom_message_type": {
-    "description": "自定义消息类型",
+  "fallback_send_mode": {
+    "description": "备用管理员发送内容模式",
     "type": "string",
-    "default": "FriendMessage",
-    "hint": "仅在'消息类型配置模式'为custom时生效。常见值：FriendMessage(私聊), GroupMessage(群聊)",
-    "options": ["FriendMessage", "GroupMessage", "DirectMessage", "PrivateMessage"]
+    "options": ["only_error", "only_complaint", "both"],
+    "default": "only_error",
+    "hint": "only_error是只发送错误信息，only_complaint是只发送告状信息，both是上述两个都发"
   }
 }
