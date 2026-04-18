@@ -1,9 +1,12 @@
 """
-告状插件 (Complaint Plugin) - 仅支持私聊环境
+告状插件 (Complaint Plugin) - 仅支持私聊环境（aiocqhttp）
 当机器人受到用户言语攻击时，可静默向管理员发送告状信息。
 
 注意：本插件假定 unified_msg_origin 的格式为 "platform:message_type:session_id[:extra...]"
 并且仅在私聊中使用。群聊中会直接拒绝。
+
+2026/04/18更新：
+限制了平台，现仅支持aiocqhttp（onebot11）
 """
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -33,35 +36,35 @@ class ComplaintPlugin(Star):
         elif isinstance(config, dict):
             self.config = config
         else:
-            # 如果是其他类型（如 AstrBotConfig），尝试转换为 dict 或使用 .get 方法
             self.config = config if hasattr(config, 'get') else {}
 
-        astrbot_config = self.context.get_config()
-        raw_admin_ids = astrbot_config.get('admins_id', [])
-        self.admin_ids = self._validate_admin_ids(raw_admin_ids)
-
+        # 插件配置（缓存，不频繁变动）
         self.report_prefix = self.config.get('report_prefix', '【机器人告状】')
         self.fallback_admin_umo = self.config.get('fallback_admin_umo', '').strip()
         fallback_mode_str = self.config.get('fallback_send_mode', 'only_error')
-        # 转换为枚举，如果无效则使用默认
         try:
             self.fallback_send_mode = FallbackMode(fallback_mode_str)
         except ValueError:
             self.fallback_send_mode = FallbackMode.ONLY_ERROR
             logger.warning(f"无效的 fallback_send_mode: {fallback_mode_str}，已使用默认值 'only_error'")
 
-        if not self.admin_ids and not self.fallback_admin_umo:
+        # 管理员列表不再缓存，每次动态获取
+        if not self._get_admin_ids() and not self.fallback_admin_umo:
             logger.warning("告状插件：未配置任何管理员（常规或备用），告状功能将无法发送消息。")
+
+    def _get_admin_ids(self) -> list[str]:
+        """动态获取当前配置的管理员ID列表"""
+        astrbot_config = self.context.get_config()
+        raw_admin_ids = astrbot_config.get('admins_id', [])
+        return self._validate_admin_ids(raw_admin_ids)
 
     def _validate_admin_ids(self, raw_ids: list[str | int]) -> list[str]:
         """验证并格式化管理员ID"""
-        # 修复：如果 raw_ids 是字符串或整数，转为单元素列表
         if isinstance(raw_ids, (str, int)):
             raw_ids = [raw_ids]
-        # 如果 raw_ids 不是可迭代对象，置为空列表
         elif not hasattr(raw_ids, '__iter__'):
             raw_ids = []
-        
+
         valid_ids = []
         for admin_id in raw_ids:
             try:
@@ -94,7 +97,6 @@ class ComplaintPlugin(Star):
             logger.info(f"消息已发送 -> {target_umo}")
             return True
         except asyncio.CancelledError:
-            # 重新抛出协程取消异常，不吞噬
             raise
         except Exception as e:
             logger.error(f"发送失败 -> {target_umo}, 错误: {type(e).__name__}: {e}")
@@ -102,24 +104,30 @@ class ComplaintPlugin(Star):
 
     async def _send_to_admins(self, event: AstrMessageEvent, complaint_text: str) -> tuple[list[str], list[str]]:
         """
-        向所有常规管理员私下发送告状消息。
+        向所有常规管理员私下发送告状消息（动态获取管理员列表）。
+        使用 Semaphore 限制并发数，避免触发风控。
         返回 (成功列表, 失败列表)
         """
-        if not self.admin_ids:
+        admin_ids = self._get_admin_ids()
+        if not admin_ids:
             return [], []
 
         original_umo = event.unified_msg_origin
         message_content = f"{self.report_prefix}\n{complaint_text}"
         message_chain = MessageChain().message(message_content)
 
-        async def send_one(admin_id: str) -> tuple[str, bool]:
-            admin_umo = self._build_admin_umo(admin_id, original_umo)
-            if admin_umo is None:
-                return admin_id, False
-            success = await self._send_message(admin_umo, message_chain)
-            return admin_id, success
+        # 限制同时最多 3 个并发发送任务
+        semaphore = asyncio.Semaphore(3)
 
-        results = await asyncio.gather(*[send_one(aid) for aid in self.admin_ids])
+        async def send_one(admin_id: str) -> tuple[str, bool]:
+            async with semaphore:
+                admin_umo = self._build_admin_umo(admin_id, original_umo)
+                if admin_umo is None:
+                    return admin_id, False
+                success = await self._send_message(admin_umo, message_chain)
+                return admin_id, success
+
+        results = await asyncio.gather(*[send_one(aid) for aid in admin_ids])
 
         success_list = [aid for aid, success in results if success]
         fail_list = [aid for aid, success in results if not success]
@@ -150,7 +158,8 @@ class ComplaintPlugin(Star):
 
     def _get_error_msg_for_fallback(self, fail_list: list[str]) -> str:
         """根据失败列表生成备用管理员用的错误信息"""
-        if not self.admin_ids:
+        admin_ids = self._get_admin_ids()
+        if not admin_ids:
             return "未配置任何常规管理员"
         elif fail_list:
             return f"向以下管理员发送失败: {', '.join(fail_list)}"
@@ -165,11 +174,9 @@ class ComplaintPlugin(Star):
         if error_msg:
             logger.error(error_msg)
 
-        # 情况1：至少有一个常规管理员成功
         if success_list:
             return "[成功] 告状已处理"
 
-        # 情况2：没有任何常规管理员成功（没有配置或全部失败）
         logger.info("常规管理员全部失败，尝试备用管理员")
         fallback_sent = await self._send_to_fallback_admin(error_msg, complaint_text)
         if fallback_sent:
@@ -185,7 +192,6 @@ class ComplaintPlugin(Star):
         Args:
             text(string): 详细的告状内容，描述用户说了什么、做了什么让你感到被欺负，以及你的感受等。
         '''
-        # 群聊中禁止使用，并记录日志
         if event.get_group_id():
             logger.error("机器人在群聊中使用告状工具，已阻止")
             return "[错误] 群聊不支持告状"
@@ -195,14 +201,16 @@ class ComplaintPlugin(Star):
         success_list, fail_list = await self._send_to_admins(event, text)
         return await self._handle_complaint_result(success_list, fail_list, text)
 
+    @filter.permission_type(filter.PermissionType.ADMIN)   # 仅管理员可用
     @filter.command("complaint_test")
     async def complaint_test(self, event: AstrMessageEvent):
-        """测试告状功能是否正常，消息是否可达"""
+        """测试告状功能是否正常，消息是否可达（仅管理员）"""
         if event.get_group_id():
             yield event.plain_result("[禁止] 测试指令仅支持私聊")
             return
 
-        if not self.admin_ids and not self.fallback_admin_umo:
+        admin_ids = self._get_admin_ids()
+        if not admin_ids and not self.fallback_admin_umo:
             yield event.plain_result("[信息] 未配置任何管理员")
             return
 
